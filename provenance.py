@@ -5,7 +5,7 @@ from importlib.metadata import version, PackageNotFoundError
 import hashlib
 import json
 import platform
-
+import subprocess
 
 # ============================================================
 # Project paths
@@ -25,7 +25,50 @@ RUNS_ROOT = (
 # ============================================================
 # Utilities
 # ============================================================
+def get_git_info():
+    """
+    Record the current Git commit and whether
+    the working tree contains uncommitted changes.
+    """
 
+    try:
+
+        commit = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "HEAD",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        status = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        return {
+            "commit": commit,
+            "dirty": bool(status),
+        }
+
+    except Exception as error:
+
+        return {
+            "commit": None,
+            "dirty": None,
+            "error": str(error),
+        }
 def current_time():
     """
     Return local time with timezone information.
@@ -211,6 +254,7 @@ class RunRecorder:
             "status": "running",
             "start_time": current_time(),
             "end_time": None,
+            "code": get_git_info(),
 
             "model": model,
 
@@ -321,12 +365,22 @@ class RunRecorder:
         # Record this tool execution
         # ----------------------------------------------------
 
+        try:
+
+            parsed_tool_result = json.loads(
+                tool_result
+            )
+
+        except Exception:
+
+            parsed_tool_result = tool_result
+
         event = {
             "timestamp": current_time(),
             "tool_name": tool_name,
             "arguments": arguments,
             "input_file": input_file,
-            "tool_result": tool_result,
+            "tool_result": parsed_tool_result,
             "validation": validation,
         }
 
