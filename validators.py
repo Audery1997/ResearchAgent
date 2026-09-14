@@ -566,10 +566,456 @@ def validate_area_weighted_mean(
 # Validator dispatcher
 # ============================================================
 
+def validate_subtract_step_results(
+    arguments: dict,
+    tool_result: str,
+    step_outputs: dict,
+) -> str:
+    """
+    Independently validate a derived difference.
+
+    Validation uses the authoritative outputs of the
+    referenced upstream plan steps, rather than trusting
+    operand values copied into the derived tool result.
+    """
+
+    checks = {}
+
+    # ========================================================
+    # Parse derived tool result
+    # ========================================================
+
+    try:
+
+        result = json.loads(
+            tool_result
+        )
+
+        if not isinstance(result, dict):
+            raise ValueError("Tool result must be a JSON object.")
+
+        checks[
+            "tool_result_is_valid_json"
+        ] = True
+
+    except Exception as error:
+
+        return json.dumps(
+            {
+                "validator":
+                    "subtract_step_results_v2",
+
+                "status":
+                    "FAIL",
+
+                "reason":
+                    f"Invalid JSON: {error}",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+
+    # ========================================================
+    # Read requested dependency IDs
+    # ========================================================
+
+    try:
+
+        left_step_id = int(
+            arguments[
+                "left_step_id"
+            ]
+        )
+
+        right_step_id = int(
+            arguments[
+                "right_step_id"
+            ]
+        )
+
+        result_field = arguments[
+            "result_field"
+        ]
+
+
+        # ========================================================
+        # Verify IDs reported by the tool
+        # ========================================================
+
+        checks[
+            "left_step_id_matches"
+        ] = (
+            result.get(
+                "left_step_id"
+            )
+            == left_step_id
+        )
+
+        checks[
+            "right_step_id_matches"
+        ] = (
+            result.get(
+                "right_step_id"
+            )
+            == right_step_id
+        )
+
+        checks[
+            "result_field_matches"
+        ] = (
+            result.get(
+                "result_field"
+            )
+            == result_field
+        )
+
+
+        # ========================================================
+        # Retrieve authoritative upstream results
+        # ========================================================
+
+        left_entry = step_outputs.get(
+            str(left_step_id)
+        )
+
+        right_entry = step_outputs.get(
+            str(right_step_id)
+        )
+
+        checks[
+            "left_upstream_result_exists"
+        ] = (
+            left_entry is not None
+        )
+
+        checks[
+            "right_upstream_result_exists"
+        ] = (
+            right_entry is not None
+        )
+
+
+        if (
+            left_entry is None
+            or right_entry is None
+        ):
+
+            return json.dumps(
+                {
+                    "validator":
+                        "subtract_step_results_v2",
+
+                    "status":
+                        "FAIL",
+
+                    "checks":
+                        checks,
+
+                    "reason":
+                        "Required validated upstream "
+                        "result is missing.",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+
+
+        # ========================================================
+        # Upstream results themselves must be validated
+        # ========================================================
+
+        checks[
+            "left_upstream_validated"
+        ] = (
+            left_entry.get(
+                "validation_status"
+            )
+            in {
+                "PASS",
+                "NOT_APPLICABLE",
+            }
+        )
+
+        checks[
+            "right_upstream_validated"
+        ] = (
+            right_entry.get(
+                "validation_status"
+            )
+            in {
+                "PASS",
+                "NOT_APPLICABLE",
+            }
+        )
+
+
+        left_result = left_entry[
+            "result"
+        ]
+
+        right_result = right_entry[
+            "result"
+        ]
+
+
+        # ========================================================
+        # Requested field must exist upstream
+        # ========================================================
+
+        checks[
+            "left_field_exists"
+        ] = (
+            result_field
+            in left_result
+        )
+
+        checks[
+            "right_field_exists"
+        ] = (
+            result_field
+            in right_result
+        )
+
+
+        if (
+            not checks[
+                "left_field_exists"
+            ]
+            or not checks[
+                "right_field_exists"
+            ]
+        ):
+
+            return json.dumps(
+                {
+                    "validator":
+                        "subtract_step_results_v2",
+
+                    "status":
+                        "FAIL",
+
+                    "checks":
+                        checks,
+
+                    "reason":
+                        "Requested result field is "
+                        "missing upstream.",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+
+
+        # ========================================================
+        # Authoritative operands
+        # ========================================================
+
+        reference_left = float(
+            left_result[
+                result_field
+            ]
+        )
+
+        reference_right = float(
+            right_result[
+                result_field
+            ]
+        )
+
+        reference_difference = (
+            reference_left
+            - reference_right
+        )
+
+
+        # ========================================================
+        # Compare copied operands against their real sources
+        # ========================================================
+
+        reported_left = float(
+            result[
+                "left_value"
+            ]
+        )
+
+        reported_right = float(
+            result[
+                "right_value"
+            ]
+        )
+
+        reported_difference = float(
+            result[
+                "difference"
+            ]
+        )
+
+
+        checks[
+            "left_value_matches_upstream"
+        ] = bool(
+            np.isclose(
+                reported_left,
+                reference_left,
+                rtol=1e-12,
+                atol=1e-12,
+            )
+        )
+
+        checks[
+            "right_value_matches_upstream"
+        ] = bool(
+            np.isclose(
+                reported_right,
+                reference_right,
+                rtol=1e-12,
+                atol=1e-12,
+            )
+        )
+
+        checks[
+            "difference_matches_upstream"
+        ] = bool(
+            np.isclose(
+                reported_difference,
+                reference_difference,
+                rtol=1e-12,
+                atol=1e-12,
+            )
+        )
+
+
+        # ========================================================
+        # Units must also agree
+        # ========================================================
+
+        left_units = (
+            left_result.get(
+                "variable_units"
+            )
+            or left_result.get(
+                "units"
+            )
+        )
+
+        right_units = (
+            right_result.get(
+                "variable_units"
+            )
+            or right_result.get(
+                "units"
+            )
+        )
+
+        reported_units = result.get(
+            "units"
+        )
+
+        checks[
+            "upstream_units_match"
+        ] = (
+            left_units
+            == right_units
+        )
+
+        checks[
+            "reported_units_match_upstream"
+        ] = (
+            reported_units
+            == left_units
+        )
+
+
+        # ========================================================
+        # Finite result
+        # ========================================================
+
+        checks[
+            "result_is_finite"
+        ] = bool(
+            np.isfinite(
+                reported_difference
+            )
+        )
+
+
+        # ========================================================
+        # Final status
+        # ========================================================
+
+        status = (
+            "PASS"
+            if all(
+                checks.values()
+            )
+            else "FAIL"
+        )
+
+
+        return json.dumps(
+            {
+                "validator":
+                    "subtract_step_results_v2",
+
+                "status":
+                    status,
+
+                "checks":
+                    checks,
+
+                "reported_difference":
+                    reported_difference,
+
+                "upstream_left_value":
+                    reference_left,
+
+                "upstream_right_value":
+                    reference_right,
+
+                "independent_difference":
+                    reference_difference,
+
+                "absolute_difference":
+                    abs(
+                        reported_difference
+                        - reference_difference
+                    ),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    except Exception as error:
+
+        checks[
+            "validation_inputs_are_valid"
+        ] = False
+
+        return json.dumps(
+            {
+                "validator":
+                    "subtract_step_results_v2",
+
+                "status":
+                    "FAIL",
+
+                "checks":
+                    checks,
+
+                "reason":
+                    f"Invalid validation input: {type(error).__name__}: {error}",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+
 def validate_tool_result(
     tool_name: str,
     arguments: dict,
     tool_result: str,
+    step_outputs: dict | None = None,
 ):
     """
     Route a tool result to its deterministic validator.
@@ -582,6 +1028,19 @@ def validate_tool_result(
         return validate_area_weighted_mean(
             arguments,
             tool_result,
+        )
+
+    if (
+        tool_name
+        == "subtract_step_results"
+    ):
+
+        return (
+            validate_subtract_step_results(
+                arguments=arguments,
+                tool_result=tool_result,
+                step_outputs=step_outputs or {},
+            )
         )
 
     return None

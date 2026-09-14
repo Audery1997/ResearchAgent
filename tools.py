@@ -656,3 +656,175 @@ def _find_coordinate(
             return name
 
     return None
+
+
+def subtract_step_results(
+    left_step_id: int,
+    right_step_id: int,
+    result_field: str,
+    left_label: str,
+    right_label: str,
+    step_outputs: dict,
+) -> str:
+    """
+    Subtract one previously validated plan-step result
+    from another.
+
+    Computes:
+        left - right
+
+    step_outputs is injected internally by the workflow,
+    not supplied by the user.
+    """
+
+    print()
+    print(
+        "[TOOL EXECUTED] "
+        "subtract_step_results("
+        f"left_step_id={left_step_id}, "
+        f"right_step_id={right_step_id})"
+    )
+
+    left_entry = step_outputs.get(
+        str(left_step_id)
+    )
+
+    right_entry = step_outputs.get(
+        str(right_step_id)
+    )
+
+    if left_entry is None:
+
+        return (
+            "ERROR: Required output from "
+            f"step {left_step_id} is missing."
+        )
+
+    if right_entry is None:
+
+        return (
+            "ERROR: Required output from "
+            f"step {right_step_id} is missing."
+        )
+
+    left_result = left_entry.get(
+        "result"
+    )
+
+    right_result = right_entry.get(
+        "result"
+    )
+
+    if not isinstance(
+        left_result,
+        dict,
+    ):
+
+        return (
+            "ERROR: Left step result is not "
+            "a structured result."
+        )
+
+    if not isinstance(
+        right_result,
+        dict,
+    ):
+
+        return (
+            "ERROR: Right step result is not "
+            "a structured result."
+        )
+
+    if result_field not in left_result:
+
+        return (
+            f"ERROR: Field {result_field!r} "
+            f"is missing from step {left_step_id}."
+        )
+
+    if result_field not in right_result:
+
+        return (
+            f"ERROR: Field {result_field!r} "
+            f"is missing from step {right_step_id}."
+        )
+
+    left_value = float(
+        left_result[result_field]
+    )
+
+    right_value = float(
+        right_result[result_field]
+    )
+
+    left_units = (
+        left_result.get(
+            "variable_units"
+        )
+        or left_result.get(
+            "units"
+        )
+    )
+
+    right_units = (
+        right_result.get(
+            "variable_units"
+        )
+        or right_result.get(
+            "units"
+        )
+    )
+
+    if left_units != right_units:
+
+        return (
+            "ERROR: Cannot subtract results "
+            f"with different units: "
+            f"{left_units!r} vs {right_units!r}."
+        )
+
+    difference = (
+        left_value
+        - right_value
+    )
+
+    result = {
+        "operation":
+            "difference",
+
+        "left_step_id":
+            left_step_id,
+
+        "right_step_id":
+            right_step_id,
+
+        "left_label":
+            left_label,
+
+        "right_label":
+            right_label,
+
+        "result_field":
+            result_field,
+
+        "left_value":
+            left_value,
+
+        "right_value":
+            right_value,
+
+        "difference":
+            difference,
+
+        "units":
+            left_units,
+
+        "formula":
+            f"{left_label} - {right_label}",
+    }
+
+    return json.dumps(
+        result,
+        indent=2,
+        ensure_ascii=False,
+    )
