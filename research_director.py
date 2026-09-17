@@ -4,8 +4,11 @@ from datetime import datetime
 from pathlib import Path
 
 import argparse
+import hashlib
 import json
+import shutil
 import sys
+
 
 from codex_worker import (
     run_codex_research_worker,
@@ -15,9 +18,25 @@ from research_cycle import (
     run_review_cycle,
 )
 
+from evidence_store import (
+    build_evidence_store,
+)
+
+from literature_agent import (
+    build_citation_store,
+)
+
+from manuscript_writer import (
+    write_manuscript,
+)
+
+from paper_cycle import (
+    run_paper_cycle,
+)
+
 
 # ============================================================
-# Project paths
+# Paths
 # ============================================================
 
 PROJECT_ROOT = (
@@ -28,7 +47,7 @@ PROJECT_ROOT = (
 
 
 # ============================================================
-# Read task
+# Utilities
 # ============================================================
 
 def read_task_file(
@@ -59,120 +78,365 @@ def read_task_file(
     return task
 
 
-# ============================================================
-# Final director summary
-# ============================================================
-
-def build_final_summary(
-    run_dir: Path,
-    worker_result: dict,
-    cycle_result: dict,
+def write_json(
+    path: Path,
+    data,
 ):
 
-    report_file = (
-        run_dir
-        / "analysis_report.md"
+    path.write_text(
+        json.dumps(
+            data,
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        ),
+        encoding="utf-8",
     )
 
-    metrics_file = (
+
+def sha256_file(
+    path: Path,
+):
+
+    digest = hashlib.sha256()
+
+    with path.open(
+        "rb"
+    ) as file:
+
+        while True:
+
+            chunk = file.read(
+                1024 * 1024
+            )
+
+            if not chunk:
+                break
+
+            digest.update(
+                chunk
+            )
+
+    return digest.hexdigest()
+
+
+# ============================================================
+# Save director state progressively
+# ============================================================
+
+def save_director_state(
+    run_dir: Path,
+    state: dict,
+):
+
+    write_json(
         run_dir
-        / "results"
-        / "metrics.json"
+        / "director_state.json",
+        state,
     )
 
-    figure_dir = (
+
+# ============================================================
+# Build final accepted package
+# ============================================================
+
+def build_final_package(
+    run_dir: Path,
+):
+
+    final_dir = (
+        run_dir
+        / "final_package"
+    )
+
+    # Clean an old package so it can never contain stale files.
+    if final_dir.exists():
+
+        shutil.rmtree(
+            final_dir
+        )
+
+    final_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+
+    manuscript_dir = (
+        run_dir
+        / "manuscript"
+        / "draft"
+    )
+
+
+    # ========================================================
+    # Final manuscript files
+    # ========================================================
+
+    manuscript_files = [
+        "manuscript.md",
+        "manuscript_traceable.md",
+        "manuscript_claim_map.json",
+        "references.md",
+        "title_abstract.md",
+        "introduction.md",
+        "methods.md",
+        "results.md",
+        "discussion.md",
+        "figure_captions.md",
+    ]
+
+
+    for name in manuscript_files:
+
+        source = (
+            manuscript_dir
+            / name
+        )
+
+        if source.is_file():
+
+            shutil.copy2(
+                source,
+                final_dir / name,
+            )
+
+
+    # ========================================================
+    # Figures
+    # ========================================================
+
+    source_figures = (
         run_dir
         / "figures"
     )
 
-    script_dir = (
+    final_figures = (
+        final_dir
+        / "figures"
+    )
+
+    if source_figures.is_dir():
+
+        shutil.copytree(
+            source_figures,
+            final_figures,
+        )
+
+
+    # ========================================================
+    # Reproducible code
+    # ========================================================
+
+    source_scripts = (
         run_dir
         / "scripts"
     )
 
-    figures = sorted(
-        str(path)
-        for path in figure_dir.glob(
-            "*.png"
-        )
+    final_scripts = (
+        final_dir
+        / "scripts"
     )
 
-    scripts = sorted(
-        str(path)
-        for path in script_dir.glob(
-            "*.py"
+    if source_scripts.is_dir():
+
+        shutil.copytree(
+            source_scripts,
+            final_scripts,
         )
+
+
+    # ========================================================
+    # Scientific results / evidence
+    # ========================================================
+
+    result_files = [
+        (
+            run_dir
+            / "results"
+            / "metrics.json"
+        ),
+
+        (
+            run_dir
+            / "analysis_report.md"
+        ),
+
+        (
+            run_dir
+            / "evidence_store.json"
+        ),
+
+        (
+            run_dir
+            / "citation_store.json"
+        ),
+
+        (
+            run_dir
+            / "research_cycle.json"
+        ),
+
+        (
+            run_dir
+            / "worker_run.json"
+        ),
+
+        (
+            run_dir
+            / "manuscript"
+            / "paper_cycle.json"
+        ),
+
+        (
+            run_dir
+            / "manuscript"
+            / "manuscript_validation.json"
+        ),
+    ]
+
+
+    support_dir = (
+        final_dir
+        / "provenance"
     )
 
-    summary = {
-        "director_status":
-            cycle_result.get(
-                "status"
+    support_dir.mkdir(
+        exist_ok=True
+    )
+
+
+    for source in result_files:
+
+        if source.is_file():
+
+            shutil.copy2(
+                source,
+                support_dir
+                / source.name,
+            )
+
+
+    # ========================================================
+    # Scientific reviews
+    # ========================================================
+
+    research_reviews = (
+        run_dir
+        / "reviews"
+    )
+
+    if research_reviews.is_dir():
+
+        shutil.copytree(
+            research_reviews,
+            support_dir
+            / "scientific_reviews",
+        )
+
+
+    paper_reviews = (
+        run_dir
+        / "manuscript"
+        / "reviews"
+    )
+
+    if paper_reviews.is_dir():
+
+        shutil.copytree(
+            paper_reviews,
+            support_dir
+            / "paper_reviews",
+        )
+
+
+    # ========================================================
+    # Manifest
+    # ========================================================
+
+    files = []
+
+    for path in sorted(
+        final_dir.rglob("*")
+    ):
+
+        if not path.is_file():
+            continue
+
+        # Do not hash the manifest while it is being built.
+        if (
+            path.name
+            == "final_manifest.json"
+        ):
+            continue
+
+        files.append(
+            {
+                "path":
+                    str(
+                        path.relative_to(
+                            final_dir
+                        )
+                    ),
+
+                "size_bytes":
+                    path.stat().st_size,
+
+                "sha256":
+                    sha256_file(
+                        path
+                    ),
+            }
+        )
+
+
+    manifest = {
+        "created_at":
+            datetime.now()
+            .astimezone()
+            .isoformat(
+                timespec="seconds"
             ),
 
-        "run_id":
-            worker_result.get(
-                "run_id"
-            ),
-
-        "run_dir":
+        "source_run":
             str(
                 run_dir
             ),
 
-        "analysis_report":
-            (
-                str(report_file)
-                if report_file.is_file()
-                else None
+        "file_count":
+            len(
+                files
             ),
 
-        "metrics":
-            (
-                str(metrics_file)
-                if metrics_file.is_file()
-                else None
-            ),
-
-        "figures":
-            figures,
-
-        "scripts":
-            scripts,
-
-        "review_history":
-            cycle_result.get(
-                "history",
-                [],
-            ),
-
-        "worker_return_code":
-            worker_result.get(
-                "return_code"
-            ),
-
-        "initial_artifact_validation":
-            worker_result.get(
-                "validation"
-            ),
+        "files":
+            files,
     }
 
-    return summary
+
+    write_json(
+        final_dir
+        / "final_manifest.json",
+        manifest,
+    )
+
+
+    return final_dir
 
 
 # ============================================================
-# Research Director
+# Full autonomous research pipeline
 # ============================================================
 
 def run_research_director(
     task: str,
     source_files: list[str],
-    max_revisions: int = 3,
+    max_research_revisions: int = 3,
+    max_paper_revisions: int = 3,
 ):
 
     print()
     print("=" * 78)
-    print("RESEARCH DIRECTOR")
+    print("FULL RESEARCH DIRECTOR")
     print("=" * 78)
 
     print()
@@ -188,17 +452,19 @@ def run_research_director(
             f"  - {file_name}"
         )
 
-    print()
-
 
     # ========================================================
-    # STAGE 1 — Autonomous Researcher
+    # STAGE 1
+    # Autonomous research
     # ========================================================
 
     print()
     print("#" * 78)
-    print("STAGE 1 — AUTONOMOUS RESEARCH")
+    print(
+        "STAGE 1 — AUTONOMOUS RESEARCH"
+    )
     print("#" * 78)
+
 
     worker_result = (
         run_codex_research_worker(
@@ -215,9 +481,34 @@ def run_research_director(
     ).resolve()
 
 
-    # ========================================================
-    # Worker process itself failed
-    # ========================================================
+    state = {
+        "run_id":
+            worker_result[
+                "run_id"
+            ],
+
+        "run_dir":
+            str(
+                run_dir
+            ),
+
+        "status":
+            "RUNNING",
+
+        "stages":
+            {},
+    }
+
+
+    state["stages"][
+        "research"
+    ] = worker_result
+
+    save_director_state(
+        run_dir,
+        state,
+    )
+
 
     if (
         worker_result[
@@ -226,121 +517,337 @@ def run_research_director(
         != 0
     ):
 
-        final = {
-            "director_status":
-                "WORKER_FAILED",
-
-            "run_dir":
-                str(
-                    run_dir
-                ),
-
-            "worker_result":
-                worker_result,
-        }
-
-        (
-            run_dir
-            / "director_summary.json"
-        ).write_text(
-            json.dumps(
-                final,
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        state["status"] = (
+            "RESEARCHER_FAILED"
         )
 
-        return final
+        save_director_state(
+            run_dir,
+            state,
+        )
+
+        return state
 
 
-    # ========================================================
-    # Artifact contract failed
-    # ========================================================
-
-    artifact_status = (
+    if (
         worker_result[
             "validation"
         ][
             "status"
         ]
-    )
+        != "PASS"
+    ):
 
-    if artifact_status != "PASS":
-
-        final = {
-            "director_status":
-                "ARTIFACT_VALIDATION_FAILED",
-
-            "run_dir":
-                str(
-                    run_dir
-                ),
-
-            "worker_result":
-                worker_result,
-        }
-
-        (
-            run_dir
-            / "director_summary.json"
-        ).write_text(
-            json.dumps(
-                final,
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+        state["status"] = (
+            "RESEARCH_ARTIFACT_FAILURE"
         )
 
-        return final
+        save_director_state(
+            run_dir,
+            state,
+        )
+
+        return state
 
 
     # ========================================================
-    # STAGE 2 — Independent review / revision cycle
+    # STAGE 2
+    # Scientific review / revision
     # ========================================================
 
     print()
     print("#" * 78)
-    print("STAGE 2 — SCIENTIFIC REVIEW CYCLE")
+    print(
+        "STAGE 2 — SCIENTIFIC REVIEW"
+    )
     print("#" * 78)
 
 
-    cycle_result = (
+    research_cycle = (
         run_review_cycle(
             run_dir=run_dir,
             max_revision_rounds=(
-                max_revisions
+                max_research_revisions
             ),
         )
     )
 
 
-    # ========================================================
-    # STAGE 3 — Final accepted research package
-    # ========================================================
+    state["stages"][
+        "scientific_review"
+    ] = research_cycle
 
-    final = build_final_summary(
-        run_dir=run_dir,
-        worker_result=worker_result,
-        cycle_result=cycle_result,
+    save_director_state(
+        run_dir,
+        state,
     )
 
 
-    (
-        run_dir
-        / "director_summary.json"
-    ).write_text(
-        json.dumps(
-            final,
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    if (
+        research_cycle[
+            "status"
+        ]
+        != "ACCEPTED"
+    ):
+
+        state["status"] = (
+            "SCIENTIFIC_REVIEW_NOT_ACCEPTED"
+        )
+
+        save_director_state(
+            run_dir,
+            state,
+        )
+
+        return state
+
+
+    # ========================================================
+    # STAGE 3
+    # Evidence Store
+    # ========================================================
+
+    print()
+    print("#" * 78)
+    print(
+        "STAGE 3 — EVIDENCE CURATION"
+    )
+    print("#" * 78)
+
+
+    evidence_result = (
+        build_evidence_store(
+            run_dir
+        )
     )
 
 
-    return final
+    state["stages"][
+        "evidence_store"
+    ] = evidence_result
+
+    save_director_state(
+        run_dir,
+        state,
+    )
+
+
+    if (
+        evidence_result[
+            "validation_status"
+        ]
+        != "PASS"
+    ):
+
+        state["status"] = (
+            "EVIDENCE_VALIDATION_FAILED"
+        )
+
+        save_director_state(
+            run_dir,
+            state,
+        )
+
+        return state
+
+
+    # ========================================================
+    # STAGE 4
+    # Literature + DOI verification
+    # ========================================================
+
+    print()
+    print("#" * 78)
+    print(
+        "STAGE 4 — LITERATURE AND "
+        "CITATION VERIFICATION"
+    )
+    print("#" * 78)
+
+
+    citation_result = (
+        build_citation_store(
+            run_dir
+        )
+    )
+
+
+    state["stages"][
+        "citation_store"
+    ] = citation_result
+
+    save_director_state(
+        run_dir,
+        state,
+    )
+
+
+    if (
+        citation_result[
+            "validation_status"
+        ]
+        != "PASS"
+    ):
+
+        state["status"] = (
+            "CITATION_VALIDATION_FAILED"
+        )
+
+        save_director_state(
+            run_dir,
+            state,
+        )
+
+        return state
+
+
+    # ========================================================
+    # STAGE 5
+    # Manuscript Writer + traceability gate
+    # ========================================================
+
+    print()
+    print("#" * 78)
+    print(
+        "STAGE 5 — MANUSCRIPT WRITING"
+    )
+    print("#" * 78)
+
+
+    manuscript_result = (
+        write_manuscript(
+            run_dir
+        )
+    )
+
+
+    state["stages"][
+        "manuscript"
+    ] = manuscript_result
+
+    save_director_state(
+        run_dir,
+        state,
+    )
+
+
+    if (
+        manuscript_result[
+            "validation_status"
+        ]
+        != "PASS"
+    ):
+
+        state["status"] = (
+            "MANUSCRIPT_TRACEABILITY_FAILED"
+        )
+
+        save_director_state(
+            run_dir,
+            state,
+        )
+
+        return state
+
+
+    # ========================================================
+    # STAGE 6
+    # Paper review / revision
+    # ========================================================
+
+    print()
+    print("#" * 78)
+    print(
+        "STAGE 6 — PAPER REVIEW"
+    )
+    print("#" * 78)
+
+
+    paper_cycle = (
+        run_paper_cycle(
+            run_dir=run_dir,
+            max_revisions=(
+                max_paper_revisions
+            ),
+        )
+    )
+
+
+    state["stages"][
+        "paper_review"
+    ] = paper_cycle
+
+    save_director_state(
+        run_dir,
+        state,
+    )
+
+
+    if (
+        paper_cycle[
+            "status"
+        ]
+        != "ACCEPTED"
+    ):
+
+        state["status"] = (
+            "PAPER_NOT_ACCEPTED"
+        )
+
+        save_director_state(
+            run_dir,
+            state,
+        )
+
+        return state
+
+
+    # ========================================================
+    # STAGE 7
+    # Final accepted research package
+    # ========================================================
+
+    print()
+    print("#" * 78)
+    print(
+        "STAGE 7 — FINAL PACKAGE"
+    )
+    print("#" * 78)
+
+
+    final_dir = (
+        build_final_package(
+            run_dir
+        )
+    )
+
+
+    state[
+        "final_package"
+    ] = str(
+        final_dir
+    )
+
+
+    state[
+        "status"
+    ] = "ACCEPTED"
+
+
+    save_director_state(
+        run_dir,
+        state,
+    )
+
+
+    write_json(
+        final_dir
+        / "director_summary.json",
+        state,
+    )
+
+
+    return state
 
 
 # ============================================================
@@ -349,12 +856,10 @@ def run_research_director(
 
 if __name__ == "__main__":
 
-    parser = (
-        argparse.ArgumentParser(
-            description=(
-                "Run an autonomous scientific "
-                "research + review workflow."
-            )
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the complete autonomous "
+            "research-to-manuscript pipeline."
         )
     )
 
@@ -362,10 +867,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--task-file",
         required=True,
-        help=(
-            "UTF-8 text/Markdown file containing "
-            "the research task."
-        ),
     )
 
 
@@ -373,15 +874,18 @@ if __name__ == "__main__":
         "--source",
         nargs="+",
         required=True,
-        help=(
-            "Input files relative to "
-            "ResearchAgent/workspace."
-        ),
     )
 
 
     parser.add_argument(
-        "--max-revisions",
+        "--max-research-revisions",
+        type=int,
+        default=3,
+    )
+
+
+    parser.add_argument(
+        "--max-paper-revisions",
         type=int,
         default=3,
     )
@@ -396,23 +900,42 @@ if __name__ == "__main__":
             args.task_file
         )
 
+
         result = (
             run_research_director(
                 task=task,
+
                 source_files=(
                     args.source
                 ),
-                max_revisions=(
-                    args.max_revisions
+
+                max_research_revisions=(
+                    args.max_research_revisions
+                ),
+
+                max_paper_revisions=(
+                    args.max_paper_revisions
                 ),
             )
         )
+
+
+    except KeyboardInterrupt:
+
+        print()
+        print(
+            "Research Director interrupted "
+            "by user."
+        )
+
+        sys.exit(130)
+
 
     except Exception as error:
 
         print()
         print(
-            "RESEARCH DIRECTOR FAILED"
+            "FULL RESEARCH DIRECTOR FAILED"
         )
 
         print(
@@ -420,12 +943,14 @@ if __name__ == "__main__":
             f"{error}"
         )
 
-        sys.exit(1)
+        raise
 
 
     print()
     print("=" * 78)
-    print("FINAL DIRECTOR RESULT")
+    print(
+        "FINAL DIRECTOR RESULT"
+    )
     print("=" * 78)
 
     print(
@@ -439,13 +964,24 @@ if __name__ == "__main__":
 
     if (
         result.get(
-            "director_status"
+            "status"
         )
         == "ACCEPTED"
     ):
 
         print()
         print(
-            "Research workflow completed "
-            "and passed independent review."
+            "The complete research workflow "
+            "passed all acceptance gates."
+        )
+
+        print()
+        print(
+            "FINAL PACKAGE:"
+        )
+
+        print(
+            result[
+                "final_package"
+            ]
         )
